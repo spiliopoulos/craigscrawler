@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 import pickle
 import smtplib
+import re
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.header import Header
 from scrapy.exceptions import DropItem
+import sys, traceback
 # Define your item pipelines here
 #
 # Don't forget to add your pipeline to the ITEM_PIPELINES setting
