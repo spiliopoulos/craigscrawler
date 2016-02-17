@@ -23,76 +23,86 @@ class EmailNotificationPipeline(object):
         self.receiver = "is2482@columbia.edu"
 
     def open_spider(self, spider):
-        self.mail_sender = smtplib.SMTP('mx.columbia.edu')
+        self.items_to_mail = []
 
     def close_spider(self, spider):
-        self.mail_sender.quit()
+        if len(self.items_to_mail) > 0:
+            mail_sender = smtplib.SMTP('mx.columbia.edu')
+            msg = self.create_mail(spider.log)
+            mail_sender.sendmail(self.sender, self.receiver, msg.as_string())
+            spider.log("send to %s:\n%s" % (self.receiver, msg.as_string()))
+            mail_sender.quit()
 
     def process_item(self, item, spider):
+        self.items_to_mail.append(item)
+        return item
+
+    def create_mail(self, log):
+        def pop_with_default(l,default):
+            try:
+                return l.pop()
+            except:
+                return default
         msg = MIMEMultipart('alternative')
-        msg['Subject'] = 'New item in craigslist'
+        msg['Subject'] = 'New items in craigslist'
         msg['From'] = self.sender
         msg['To'] = self.receiver
 
-        divider = "-"*72
-        try:
-            text = "".join(
-                [
-                    "New item found in craigslist\n",
-                    divider,
-                    "\n",
-                    divider,
-                    "\n",
-                    item['link'],
-                    "\n",
-                    item['title'][0],
-                    "\n",
-                    item['price'][0],
-                    "\n",
-                    "".join(item['description']),
-                    "\n",
-                    item['main_image'][0],
-                    "\n",
-                    divider,
-                    "\n",
+        divider = ("-"*160 + "\n")*2
+        text = "New items found in craigslist\n" + divider
+        divider_html = ("-"*160 + "<br>")*2
+        html =  (
+            "<html>\n" +
+            "\t<head></head>\n" +
+            "\t<body>\n" +
+            "\t\t<p>Hi, take a look at this:</p>\n" +
+            divider_html
+        )
+        for item in self.items_to_mail:
+            link = item['link']
+            title = pop_with_default(item['title'],"N/A")
+            price = pop_with_default(item['price'],"N/A")
+            main_image = pop_with_default(item['main_image'],"")
+
+            try:
+                text += (
+                    link + "\n" +
+                    title + "\n" +
+                    price + "\n" +
+                    "".join(item['description']) + "\n" +
+                    main_image + "\n" +
                     divider
-                ]
-            )
-            html = """\
-<html>
-    <head></head>
-    <body>
-        <p>Hi, take a look at this:</p>
-        <a href=%s>%s, %s</a>
-        <img src=%s alt='missing image'></img>
-        <p>%s</p>
-    </body>
-</html>
-""" % (
-        item['link'],
-        item['title'][0],
-        item['price'][0],
-        item['main_image'][0],
-        "".join(item['description'])
-    )
+                )
+                html += (
+                    "<div style='max-width:53em'>" + 
+                    "<a href=%s>%s, %s</a><br>" +
+                    "<img src=%s alt='missing image'></img><br>" +
+                    "<p>%s</p><br>" + 
+                    "</div>"
+                ) % (
+                    link,
+                    title,
+                    price,
+                    main_image,
+                    "<br>".join(item['description'])
+                )
+                html += divider_html
+            except Exception as e:
+                log("Malformed item: %s" % item)
+                log(e)
+                log(traceback.format_tb(sys.exc_traceback))
+                continue
 
-        except:
-            return item
-
-        part1 = MIMEText(text, 'plain')
-        part2 = MIMEText(html, 'html')
+        html += "</body>\n</html>"
+        part1 = MIMEText(text.encode('utf-8'), 'plain', 'utf-8')
+        part2 = MIMEText(html.encode('utf-8'), 'html', 'utf-8')
         msg.attach(part1)
         msg.attach(part2)
-        self.mail_sender.sendmail(self.sender, self.receiver, msg.as_string())
-        spider.log("send to %s:\n%s" % (self.receiver, msg.as_string()))
-        return item
+        return msg
 
 class DuplicatesPipeline(object):
     def __init__(self):
         self.db = "crawlset.db"
-
-    def filter_by(self, item):
-        return not ("58" in item['description'])
 
     def open_spider(self, spider):
         try:
@@ -108,8 +118,42 @@ class DuplicatesPipeline(object):
     def process_item(self, item, spider):
         if item['link'] in self.ids_seen:
             raise DropItem("Duplicate item found: %s" %item)
-        if self.filter_by(item):
-            raise DropItem("Filtered out. Does not contain 58: %s" %item)
         else:
             self.ids_seen.add(item['link'])
             return item
+
+class FilterPipeline(object):
+    def __init__(self):
+        self.filters = [
+            lambda item: re.search(
+                r"58cm|58 cm|size.\s*58",
+                "".join(item['description']),
+                flags=re.IGNORECASE
+            )
+        ]
+
+    def filter_by(self, item):
+        for filter_function in self.filters:
+            if not filter_function(item):
+                return True
+        return False
+
+    def process_item(self, item, spider):
+        if self.filter_by(item):
+            raise DropItem("Filtered out: %s" %item)
+        else:
+            return item
+
+class CountFullyProcessedItemsPipeline(object):
+    def __init__(self):
+        pass
+    
+    def open_spider(self, spider):
+        self.count = 0
+
+    def close_spider(self, spider):
+        spider.log("User was notified for %d new items" % self.count)
+    
+    def process_item(self, item, spider):
+        self.count += 1
+        return item
